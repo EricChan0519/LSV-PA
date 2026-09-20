@@ -3,10 +3,9 @@
 #include "base/main/mainInt.h"
 #include "bdd/cudd/cudd.h"
 
-#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
-#include <unordered_map>
-#include <utility>
+#include <map>
 #include <vector>
 
 ABC_NAMESPACE_IMPL_START
@@ -29,215 +28,169 @@ struct PackageRegistrationManager {
   PackageRegistrationManager() { Abc_FrameAddInitializer(&frame_initializer); }
 } lsvPackageRegistrationManager;
 
-////////////////////////////////////////////////////////////////////////
-///                     Cut enumeration helpers                      ///
-////////////////////////////////////////////////////////////////////////
-
-using Lsv_Cut = std::vector<int>;
-
-static bool Lsv_CutDominates(const Lsv_Cut& a, const Lsv_Cut& b) {
-  // a dominates b iff a is a subset of b
-  if (a.size() > b.size()) return false;
-  size_t i = 0, j = 0;
-  while (i < a.size() && j < b.size()) {
+static int is_subset(std::vector<int>& a, std::vector<int>& b) {
+  int i = 0, j = 0;
+  if ((int)a.size() > (int)b.size()) return 0;
+  while (i < (int)a.size() && j < (int)b.size()) {
     if (a[i] == b[j]) {
-      ++i;
-      ++j;
+      i++;
+      j++;
     } else if (a[i] > b[j]) {
-      ++j;
-    } else {
-      return false;
-    }
+      j++;
+    } else
+      return 0;
   }
-  return i == a.size();
+  return i == (int)a.size();
 }
 
-static Lsv_Cut Lsv_CutMerge(const Lsv_Cut& a, const Lsv_Cut& b) {
-  Lsv_Cut r;
-  r.reserve(a.size() + b.size());
-  size_t i = 0, j = 0;
-  while (i < a.size() && j < b.size()) {
+static void merge_two(std::vector<int>& a, std::vector<int>& b, std::vector<int>& out) {
+  out.clear();
+  int i = 0, j = 0;
+  while (i < (int)a.size() && j < (int)b.size()) {
     if (a[i] < b[j])
-      r.push_back(a[i++]);
+      out.push_back(a[i++]);
     else if (a[i] > b[j])
-      r.push_back(b[j++]);
+      out.push_back(b[j++]);
     else {
-      r.push_back(a[i]);
-      ++i;
-      ++j;
+      out.push_back(a[i]);
+      i++;
+      j++;
     }
   }
-  while (i < a.size()) r.push_back(a[i++]);
-  while (j < b.size()) r.push_back(b[j++]);
-  return r;
+  while (i < (int)a.size()) out.push_back(a[i++]);
+  while (j < (int)b.size()) out.push_back(b[j++]);
 }
 
-static void Lsv_CutSetAdd(std::vector<Lsv_Cut>& cuts, const Lsv_Cut& cut) {
-  for (const auto& c : cuts) {
-    if (c == cut) return;
-    if (Lsv_CutDominates(c, cut)) return;  // existing cut dominates new
+static void insert_cut(std::vector<std::vector<int> >& cuts, std::vector<int>& c) {
+  int t;
+  for (t = 0; t < (int)cuts.size(); t++) {
+    if (cuts[t] == c) return;
+    if (is_subset(cuts[t], c)) return;
   }
-  // remove cuts dominated by the new cut
-  std::vector<Lsv_Cut> kept;
-  kept.reserve(cuts.size() + 1);
-  for (auto& c : cuts) {
-    if (!Lsv_CutDominates(cut, c)) kept.push_back(std::move(c));
+  std::vector<std::vector<int> > tmp;
+  for (t = 0; t < (int)cuts.size(); t++) {
+    if (!is_subset(c, cuts[t])) tmp.push_back(cuts[t]);
   }
-  kept.push_back(cut);
-  cuts.swap(kept);
+  tmp.push_back(c);
+  cuts = tmp;
 }
 
-static std::vector<std::vector<Lsv_Cut>> Lsv_NtkEnumerateCuts(Abc_Ntk_t* pNtk,
-                                                             int nK) {
-  const int nObjs = Abc_NtkObjNumMax(pNtk);
-  std::vector<std::vector<Lsv_Cut>> cuts(nObjs);
-
+static void collect_cuts(Abc_Ntk_t* pNtk, int k, std::vector<std::vector<std::vector<int> > >& all) {
+  int nMax = Abc_NtkObjNumMax(pNtk);
   Abc_Obj_t* pObj;
   int i;
+  all.clear();
+  all.resize(nMax);
 
-  // Primary inputs: only the trivial cut
   Abc_NtkForEachCi(pNtk, pObj, i) {
-    int id = (int)Abc_ObjId(pObj);
-    cuts[id].push_back(Lsv_Cut{id});
+    int id = Abc_ObjId(pObj);
+    std::vector<int> c;
+    c.push_back(id);
+    all[id].push_back(c);
   }
 
-  // Constant node (if present): trivial cut
   pObj = Abc_AigConst1(pNtk);
   if (pObj) {
-    int id = (int)Abc_ObjId(pObj);
-    cuts[id].push_back(Lsv_Cut{id});
+    int id = Abc_ObjId(pObj);
+    std::vector<int> c;
+    c.push_back(id);
+    all[id].push_back(c);
   }
 
-  // AND nodes in topological order (object ID order for strashed AIGs)
   Abc_NtkForEachNode(pNtk, pObj, i) {
-    const int id = Abc_ObjId(pObj);
-    Abc_Obj_t* pFan0 = Abc_ObjFanin0(pObj);
-    Abc_Obj_t* pFan1 = Abc_ObjFanin1(pObj);
-    const auto& cuts0 = cuts[Abc_ObjId(pFan0)];
-    const auto& cuts1 = cuts[Abc_ObjId(pFan1)];
+    int id = Abc_ObjId(pObj);
+    int f0 = Abc_ObjId(Abc_ObjFanin0(pObj));
+    int f1 = Abc_ObjId(Abc_ObjFanin1(pObj));
+    std::vector<int> triv;
+    triv.push_back(id);
+    insert_cut(all[id], triv);
 
-    // trivial cut
-    Lsv_CutSetAdd(cuts[id], Lsv_Cut{id});
-
-    for (const auto& c0 : cuts0) {
-      for (const auto& c1 : cuts1) {
-        Lsv_Cut merged = Lsv_CutMerge(c0, c1);
-        if ((int)merged.size() <= nK) Lsv_CutSetAdd(cuts[id], merged);
+    int a, b;
+    for (a = 0; a < (int)all[f0].size(); a++) {
+      for (b = 0; b < (int)all[f1].size(); b++) {
+        std::vector<int> m;
+        merge_two(all[f0][a], all[f1][b], m);
+        if ((int)m.size() <= k) insert_cut(all[id], m);
       }
     }
   }
-
-  return cuts;
 }
 
-////////////////////////////////////////////////////////////////////////
-///                     Truth-table computation                      ///
-////////////////////////////////////////////////////////////////////////
-
-static int Lsv_EvalNodeValue(Abc_Obj_t* pObj,
-                             const std::unordered_map<int, int>& leafVal,
-                             std::unordered_map<int, int>& memo) {
-  const int id = Abc_ObjId(pObj);
-  auto lit = leafVal.find(id);
-  if (lit != leafVal.end()) return lit->second;
-
-  auto it = memo.find(id);
-  if (it != memo.end()) return it->second;
-
-  assert(Abc_ObjIsNode(pObj));
-  int v0 = Lsv_EvalNodeValue(Abc_ObjFanin0(pObj), leafVal, memo);
-  int v1 = Lsv_EvalNodeValue(Abc_ObjFanin1(pObj), leafVal, memo);
+static int sim_node(Abc_Obj_t* pObj, std::map<int, int>& leaf, std::map<int, int>& memo) {
+  int id = Abc_ObjId(pObj);
+  if (leaf.count(id)) return leaf[id];
+  if (memo.count(id)) return memo[id];
+  int v0 = sim_node(Abc_ObjFanin0(pObj), leaf, memo);
+  int v1 = sim_node(Abc_ObjFanin1(pObj), leaf, memo);
   if (Abc_ObjFaninC0(pObj)) v0 ^= 1;
   if (Abc_ObjFaninC1(pObj)) v1 ^= 1;
-  int res = v0 & v1;
-  memo[id] = res;
-  return res;
+  memo[id] = v0 & v1;
+  return memo[id];
 }
 
-static uint64_t Lsv_CutTruthTable(Abc_Obj_t* pRoot, const Lsv_Cut& cut) {
-  const int n = (int)cut.size();
-  const uint64_t nMinterms = 1ULL << n;
-  uint64_t tt = 0;
-
-  for (uint64_t p = 0; p < nMinterms; ++p) {
-    std::unordered_map<int, int> leafVal;
-    leafVal.reserve(n * 2);
-    for (int j = 0; j < n; ++j) {
-      // First leaf is the MSB of the assignment index
+static unsigned long long cut_tt(Abc_Obj_t* root, std::vector<int>& cut) {
+  int n = (int)cut.size();
+  unsigned long long tt = 0;
+  unsigned long long lim = 1ULL << n;
+  unsigned long long p;
+  for (p = 0; p < lim; p++) {
+    std::map<int, int> leaf;
+    std::map<int, int> memo;
+    int j;
+    for (j = 0; j < n; j++) {
       int bit = (int)((p >> (n - 1 - j)) & 1ULL);
-      leafVal[cut[j]] = bit;
+      leaf[cut[j]] = bit;
     }
-    std::unordered_map<int, int> memo;
-    int val = Lsv_EvalNodeValue(pRoot, leafVal, memo);
-    if (val) tt |= (1ULL << p);
+    if (sim_node(root, leaf, memo)) tt |= (1ULL << p);
   }
   return tt;
 }
 
-static void Lsv_PrintHexTt(uint64_t tt) {
-  // Uppercase hex without leading zeros (except for 0)
-  printf("%lX", (unsigned long)tt);
-}
+static DdNode* make_bdd(DdManager* dd, Abc_Obj_t* pObj, std::map<int, int>& leafVar,
+                        std::map<int, DdNode*>& memo) {
+  int id = Abc_ObjId(pObj);
+  if (leafVar.count(id)) return Cudd_bddIthVar(dd, leafVar[id]);
+  if (memo.count(id)) return memo[id];
 
-////////////////////////////////////////////////////////////////////////
-///                        BDD computation                           ///
-////////////////////////////////////////////////////////////////////////
-
-static DdNode* Lsv_BuildCutBdd(DdManager* dd, Abc_Obj_t* pObj,
-                               const std::unordered_map<int, int>& leaf2var,
-                               std::unordered_map<int, DdNode*>& memo) {
-  const int id = Abc_ObjId(pObj);
-  auto lit = leaf2var.find(id);
-  if (lit != leaf2var.end()) {
-    return Cudd_bddIthVar(dd, lit->second);
-  }
-
-  auto it = memo.find(id);
-  if (it != memo.end()) return it->second;
-
-  assert(Abc_ObjIsNode(pObj));
-  DdNode* f0 = Lsv_BuildCutBdd(dd, Abc_ObjFanin0(pObj), leaf2var, memo);
-  DdNode* f1 = Lsv_BuildCutBdd(dd, Abc_ObjFanin1(pObj), leaf2var, memo);
+  DdNode* f0 = make_bdd(dd, Abc_ObjFanin0(pObj), leafVar, memo);
+  DdNode* f1 = make_bdd(dd, Abc_ObjFanin1(pObj), leafVar, memo);
   if (Abc_ObjFaninC0(pObj)) f0 = Cudd_Not(f0);
   if (Abc_ObjFaninC1(pObj)) f1 = Cudd_Not(f1);
 
-  DdNode* res = Cudd_bddAnd(dd, f0, f1);
-  Cudd_Ref(res);
-  memo[id] = res;
-  return res;
+  DdNode* r = Cudd_bddAnd(dd, f0, f1);
+  Cudd_Ref(r);
+  memo[id] = r;
+  return r;
 }
 
-static int Lsv_CutBddSize(Abc_Obj_t* pRoot, const Lsv_Cut& cut) {
-  const int n = (int)cut.size();
+static int cut_bdd_sz(Abc_Obj_t* root, std::vector<int>& cut) {
+  int n = (int)cut.size();
   DdManager* dd = Cudd_Init(n, 0, CUDD_UNIQUE_SLOTS, CUDD_CACHE_SLOTS, 0);
   Cudd_AutodynDisable(dd);
 
-  std::unordered_map<int, int> leaf2var;
-  leaf2var.reserve(n * 2);
-  // Smaller node ID -> smaller BDD variable index -> closer to root
-  for (int j = 0; j < n; ++j) leaf2var[cut[j]] = j;
+  std::map<int, int> leafVar;
+  int j;
+  for (j = 0; j < n; j++) leafVar[cut[j]] = j;
 
-  std::unordered_map<int, DdNode*> memo;
-  DdNode* bFunc = Lsv_BuildCutBdd(dd, pRoot, leaf2var, memo);
-  Cudd_Ref(bFunc);
-  int size = Cudd_DagSize(bFunc);
+  std::map<int, DdNode*> memo;
+  DdNode* f = make_bdd(dd, root, leafVar, memo);
+  Cudd_Ref(f);
+  int sz = Cudd_DagSize(f);
 
-  for (auto& kv : memo) Cudd_RecursiveDeref(dd, kv.second);
-  Cudd_RecursiveDeref(dd, bFunc);
+  std::map<int, DdNode*>::iterator it;
+  for (it = memo.begin(); it != memo.end(); ++it) Cudd_RecursiveDeref(dd, it->second);
+  Cudd_RecursiveDeref(dd, f);
   Cudd_Quit(dd);
-  return size;
+  return sz;
 }
 
-static void Lsv_PrintCutLeaves(const Lsv_Cut& cut) {
-  for (size_t i = 0; i < cut.size(); ++i) {
+static void dump_leaves(std::vector<int>& cut) {
+  int i;
+  for (i = 0; i < (int)cut.size(); i++) {
     if (i) printf(" ");
     printf("%d", cut[i]);
   }
 }
-
-////////////////////////////////////////////////////////////////////////
-///                         Command handlers                         ///
-////////////////////////////////////////////////////////////////////////
 
 void Lsv_NtkPrintNodes(Abc_Ntk_t* pNtk) {
   Abc_Obj_t* pObj;
@@ -284,7 +237,8 @@ usage:
 
 int Lsv_CommandCutTt(Abc_Frame_t* pAbc, int argc, char** argv) {
   Abc_Ntk_t* pNtk = Abc_FrameReadNtk(pAbc);
-  int c, nK = 0;
+  int c;
+  int k;
   Extra_UtilGetoptReset();
   while ((c = Extra_UtilGetopt(argc, argv, "h")) != EOF) {
     switch (c) {
@@ -295,33 +249,29 @@ int Lsv_CommandCutTt(Abc_Frame_t* pAbc, int argc, char** argv) {
     }
   }
   if (globalUtilOptind >= argc) goto usage;
-  {
-    char* end = nullptr;
-    long k = strtol(argv[globalUtilOptind], &end, 10);
-    if (end == argv[globalUtilOptind] || *end != '\0' || k < 1) goto usage;
-    nK = (int)k;
-  }
+  k = atoi(argv[globalUtilOptind]);
+  if (k < 1) goto usage;
   if (!pNtk) {
     Abc_Print(-1, "Empty network.\n");
     return 1;
   }
   if (!Abc_NtkIsStrash(pNtk)) {
-    Abc_Print(-1, "LSV cut commands only work for structurally hashed AIGs (run \"strash\").\n");
+    Abc_Print(-1, "network is not strashed\n");
     return 1;
   }
 
   {
-    auto allCuts = Lsv_NtkEnumerateCuts(pNtk, nK);
+    std::vector<std::vector<std::vector<int> > > all;
+    collect_cuts(pNtk, k, all);
     Abc_Obj_t* pObj;
     int i;
     Abc_NtkForEachNode(pNtk, pObj, i) {
-      const int id = Abc_ObjId(pObj);
-      for (const auto& cut : allCuts[id]) {
+      int id = Abc_ObjId(pObj);
+      int t;
+      for (t = 0; t < (int)all[id].size(); t++) {
         printf("%d: ", id);
-        Lsv_PrintCutLeaves(cut);
-        printf(": ");
-        Lsv_PrintHexTt(Lsv_CutTruthTable(pObj, cut));
-        printf("\n");
+        dump_leaves(all[id][t]);
+        printf(": %lX\n", (unsigned long)cut_tt(pObj, all[id][t]));
       }
     }
   }
@@ -336,7 +286,8 @@ usage:
 
 int Lsv_CommandCutBddSize(Abc_Frame_t* pAbc, int argc, char** argv) {
   Abc_Ntk_t* pNtk = Abc_FrameReadNtk(pAbc);
-  int c, nK = 0;
+  int c;
+  int k;
   Extra_UtilGetoptReset();
   while ((c = Extra_UtilGetopt(argc, argv, "h")) != EOF) {
     switch (c) {
@@ -347,31 +298,29 @@ int Lsv_CommandCutBddSize(Abc_Frame_t* pAbc, int argc, char** argv) {
     }
   }
   if (globalUtilOptind >= argc) goto usage;
-  {
-    char* end = nullptr;
-    long k = strtol(argv[globalUtilOptind], &end, 10);
-    if (end == argv[globalUtilOptind] || *end != '\0' || k < 1) goto usage;
-    nK = (int)k;
-  }
+  k = atoi(argv[globalUtilOptind]);
+  if (k < 1) goto usage;
   if (!pNtk) {
     Abc_Print(-1, "Empty network.\n");
     return 1;
   }
   if (!Abc_NtkIsStrash(pNtk)) {
-    Abc_Print(-1, "LSV cut commands only work for structurally hashed AIGs (run \"strash\").\n");
+    Abc_Print(-1, "network is not strashed\n");
     return 1;
   }
 
   {
-    auto allCuts = Lsv_NtkEnumerateCuts(pNtk, nK);
+    std::vector<std::vector<std::vector<int> > > all;
+    collect_cuts(pNtk, k, all);
     Abc_Obj_t* pObj;
     int i;
     Abc_NtkForEachNode(pNtk, pObj, i) {
-      const int id = Abc_ObjId(pObj);
-      for (const auto& cut : allCuts[id]) {
+      int id = Abc_ObjId(pObj);
+      int t;
+      for (t = 0; t < (int)all[id].size(); t++) {
         printf("%d: ", id);
-        Lsv_PrintCutLeaves(cut);
-        printf(": %d\n", Lsv_CutBddSize(pObj, cut));
+        dump_leaves(all[id][t]);
+        printf(": %d\n", cut_bdd_sz(pObj, all[id][t]));
       }
     }
   }
