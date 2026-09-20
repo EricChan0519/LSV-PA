@@ -1,0 +1,39 @@
+# Two-bit unsigned multiplier: Y = A * B
+# A = (a1 a0), B = (b1 b0), Y = (y3 y2 y1 y0)
+.model mul
+.inputs a1 a0 b1 b0
+.outputs y3 y2 y1 y0
+
+# Partial products
+.names a0 b0 p00
+11 1
+.names a0 b1 p01
+11 1
+.names a1 b0 p10
+11 1
+.names a1 b1 p11
+11 1
+
+# y0 = p00
+.names p00 y0
+1 1
+
+# y1 = p01 XOR p10
+.names p01 p10 y1
+10 1
+01 1
+
+# c1 = p01 AND p10
+.names p01 p10 c1
+11 1
+
+# y2 = p11 XOR c1
+.names p11 c1 y2
+10 1
+01 1
+
+# y3 = p11 AND c1
+.names p11 c1 y3
+11 1
+
+.end

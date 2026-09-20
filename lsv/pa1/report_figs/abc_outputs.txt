@@ -1,0 +1,23 @@
+=== Ex2: read + print_stats ===
+
+[1;37mmul                           :[0m i/o =    4/    4  lat =    0  nd =     9  edge =     17  cube =    11  lev = 3
+
+=== Ex2: strash + print_stats ===
+
+[1;37mmul                           :[0m i/o =    4/    4  lat =    0  and =     12  lev =  4
+
+=== Ex3a: aig vs strash ===
+
+[1;37mmul                           :[0m i/o =    4/    4  lat =    0  nd =     9  edge =     17  aig  =    12  lev = 3
+
+[1;37mmul                           :[0m i/o =    4/    4  lat =    0  and =     12  lev =  4
+
+=== Ex3a: bdd vs collapse ===
+
+[1;37mmul                           :[0m i/o =    4/    4  lat =    0  nd =     9  edge =     17  bdd  =    16  lev = 3
+
+[1;37mmul                           :[0m i/o =    4/    4  lat =    0  nd =     4  edge =     14  bdd  =    14  lev = 1
+
+=== Ex3b: strash -> logic -> sop ===
+
+[1;37mmul                           :[0m i/o =    4/    4  lat =    0  nd =    12  edge =     24  cube =    12  lev = 4
